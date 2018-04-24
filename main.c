@@ -545,18 +545,38 @@ void bsp_event_handler(bsp_event_t event)
     uint32_t err_code;
     switch (event)
     {
-				case BSP_EVENT_KEY_0:
-					to_send = "Button 1 pressed\n";
-					break;
-				case BSP_EVENT_KEY_1:
-					to_send = "Button 2 pressed\n";
-					break;
-				case BSP_EVENT_KEY_2:
-					to_send = "Button 3 pressed\n";
-					break;
-				case BSP_EVENT_KEY_3:
-					to_send = "Button 4 pressed\n";
-					break;
+      case BSP_EVENT_KEY_0:
+              to_send = "Button 1 pressed\n";
+              break;
+      case BSP_EVENT_KEY_1:
+              to_send = "Button 2 pressed\n";
+              break;
+      case BSP_EVENT_KEY_2:
+              to_send = "Button 3 pressed\n";
+              break;
+      case BSP_EVENT_KEY_3: {
+              ble_advdata_t p_advdata;
+              //TRYING TO SET ADVERTISING DATA DURING RUNTIME (DOESN't WORK)
+              
+              //set advertising settings
+              p_advdata.name_type          = BLE_ADVDATA_SHORT_NAME;
+              p_advdata.short_name_len     = 6;	//Restrict to 6 bytes to leave room for the rest of advertising data
+              p_advdata.include_appearance = true;
+              p_advdata.flags              = BLE_GAP_ADV_FLAGS_LE_ONLY_LIMITED_DISC_MODE;
+              int8_t tx_power_level = BLE_GAP_AD_TYPE_TX_POWER_LEVEL;
+              p_advdata.p_tx_power_level = &tx_power_level; //Used to calculate distance from device 
+
+              //Set advertising data (31 bytes including name from DEVICE_NAME, company_identifier (2 bytes), and tx_power_level (1 byte))
+              uint8_t data[] = "RESET!";
+              uint16_t p_len = sizeof(data);
+              
+              //Set the new packet
+              ret_code_t error_code = ble_advdata_encode(&p_advdata, data, &p_len);
+              SEGGER_RTT_printf(0, "Error Code: %d\n", ((uint32_t) error_code)); //print error code for debugging
+              
+              to_send = "Button 4 pressed\n";
+              break;
+      }
 				
         case BSP_EVENT_SLEEP:
             sleep_mode_enter();
@@ -607,11 +627,12 @@ void uart_event_handle(app_uart_evt_t * p_event)
         case APP_UART_DATA_READY:
             UNUSED_VARIABLE(app_uart_get(&data_array[index]));
             index++;
-						SEGGER_RTT_printf(0, "Data Received: %s\n", data_array);
+						
 
             if ((data_array[index - 1] == '\n') || (index >= (m_ble_nus_max_data_len)))
             {
-                NRF_LOG_DEBUG("Ready to send data over BLE NUS");
+                SEGGER_RTT_printf(0, "Data Received: %s\n", data_array);
+								NRF_LOG_DEBUG("Ready to send data over BLE NUS");
                 NRF_LOG_HEXDUMP_DEBUG(data_array, index);
 
                 do
@@ -624,7 +645,13 @@ void uart_event_handle(app_uart_evt_t * p_event)
                         APP_ERROR_CHECK(err_code);
                     }
                 } while (err_code == NRF_ERROR_BUSY);
-
+                // if DISCONNECT_USER is sent over uart, it kicks off currently connected user
+                if (strcmp((const char*) data_array, "DISCONNECT_USER\n") == 0) {
+                        SEGGER_RTT_printf(0, "Disconnect command received, kicking off current user\n");
+                        err_code = sd_ble_gap_disconnect(m_conn_handle, BLE_HCI_LOCAL_HOST_TERMINATED_CONNECTION);
+                        APP_ERROR_CHECK(err_code);
+                }
+								
                 index = 0;
             }
             break;
@@ -685,18 +712,44 @@ static void advertising_init(void)
 
     memset(&init, 0, sizeof(init));
 
-    init.advdata.name_type          = BLE_ADVDATA_FULL_NAME;
-    init.advdata.include_appearance = false;
+		//Set name of advertisement data and settings
+    init.advdata.name_type          = BLE_ADVDATA_SHORT_NAME;
+	  init.advdata.short_name_len     = 6;	//Restrict to 6 bytes to leave room for the rest of advertising data
+    init.advdata.include_appearance = true;
     init.advdata.flags              = BLE_GAP_ADV_FLAGS_LE_ONLY_LIMITED_DISC_MODE;
+    int8_t tx_power_level = BLE_GAP_AD_TYPE_TX_POWER_LEVEL;
+    init.advdata.p_tx_power_level = &tx_power_level; //Used to calculate distance from device 
 
+    //Set advertising data (31 bytes including name from DEVICE_NAME, company_identifier (2 bytes), and tx_power_level (1 byte))
+    ble_advdata_manuf_data_t manuf_data;
+    uint8_t data[] = "HELLO!";
+    manuf_data.company_identifier = 0xFFFF; //Testing identifier (temporary), must change to a company ID, Nordics company ID (0x0059)
+    manuf_data.data.p_data = data;
+    manuf_data.data.size = sizeof(data);
+    init.advdata.p_manuf_specific_data = &manuf_data;
+
+    //Set name of scan response advertisement data and settings
+    init.srdata.name_type = BLE_ADVDATA_NO_NAME;
+
+    //Set scan response advertising data (additional 31 bytes, total 62 bytes)
+    ble_advdata_manuf_data_t manuf_data_response;
+    uint8_t scan_data[] = "WORLD!";
+    manuf_data_response.company_identifier = 0xFFFF;
+    manuf_data_response.data.p_data = scan_data;
+    manuf_data_response.data.size = sizeof(scan_data);
+    init.srdata.p_manuf_specific_data = &manuf_data_response;
+
+    //Set UUID
     init.srdata.uuids_complete.uuid_cnt = sizeof(m_adv_uuids) / sizeof(m_adv_uuids[0]);
     init.srdata.uuids_complete.p_uuids  = m_adv_uuids;
 
+		//Set BLE config
     init.config.ble_adv_fast_enabled  = true;
     init.config.ble_adv_fast_interval = APP_ADV_INTERVAL;
     init.config.ble_adv_fast_timeout  = APP_ADV_DURATION;
     init.evt_handler = on_adv_evt;
 
+		//Init advertising
     err_code = ble_advertising_init(&m_advertising, &init);
     APP_ERROR_CHECK(err_code);
 
